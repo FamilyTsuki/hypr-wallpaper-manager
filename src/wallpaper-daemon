@@ -1,0 +1,527 @@
+#!/bin/bash
+
+# ==============================================================================
+# wallpaper-daemon : Démon de rotation automatique de fonds d'écran Wallpaper Engine
+# ==============================================================================
+
+BASE_DIR="$HOME/.config/hypr/wallpaper_engine"
+CONF_FILE="$HOME/.config/hypr/wallpaper_engine.conf"
+WORKSHOP_DIR="$HOME/.local/share/Steam/steamapps/workshop/content/431960"
+PID_FILE="$BASE_DIR/rotation.pid"
+LOG_FILE="$BASE_DIR/rotation.log"
+FAV_FILE="$BASE_DIR/favorites.txt"
+HISTORY_FILE="$BASE_DIR/history.txt"
+PLAYLIST_DIR="$BASE_DIR/playlists"
+SET_WALLPAPER="set-wallpaper"
+
+mkdir -p "$BASE_DIR" "$PLAYLIST_DIR"
+touch "$FAV_FILE" "$HISTORY_FILE"
+
+# Charger la configuration
+if [ -f "$CONF_FILE" ]; then
+    # shellcheck source=/dev/null
+    source "$CONF_FILE"
+fi
+
+parse_duration() {
+    local str="$1"
+    str=$(echo "$str" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+    if [[ "$str" =~ ^([0-9]+)s$ ]]; then
+        echo "${BASH_REMATCH[1]}"
+    elif [[ "$str" =~ ^([0-9]+)m$ ]]; then
+        echo "$((BASH_REMATCH[1] * 60))"
+    elif [[ "$str" =~ ^([0-9]+)h$ ]]; then
+        echo "$((BASH_REMATCH[1] * 3600))"
+    elif [[ "$str" =~ ^([0-9]+)d$ ]]; then
+        echo "$((BASH_REMATCH[1] * 86400))"
+    elif [[ "$str" =~ ^([0-9]+)$ ]]; then
+        # Par défaut, si juste un nombre, interprété en minutes
+        echo "$((str * 60))"
+    else
+        echo "-1"
+    fi
+}
+
+format_duration() {
+    local s="$1"
+    if [ "$s" -ge 3600 ]; then
+        local h=$((s / 3600))
+        local m=$(((s % 3600) / 60))
+        if [ "$m" -gt 0 ]; then
+            echo "${h}h ${m}m"
+        else
+            echo "${h}h"
+        fi
+    elif [ "$s" -ge 60 ]; then
+        local m=$((s / 60))
+        local sec=$((s % 60))
+        if [ "$sec" -gt 0 ]; then
+            echo "${m}m ${sec}s"
+        else
+            echo "${m}m"
+        fi
+    else
+        echo "${s}s"
+    fi
+}
+
+get_title() {
+    local id="$1"
+    local proj="$WORKSHOP_DIR/$id/project.json"
+    if [ -f "$proj" ]; then
+        jq -r '.title // "Sans titre"' "$proj" 2>/dev/null || echo "Sans titre"
+    else
+        echo "Inconnu"
+    fi
+}
+
+get_type() {
+    local id="$1"
+    local proj="$WORKSHOP_DIR/$id/project.json"
+    if [ -f "$proj" ]; then
+        jq -r '.type // "inconnu"' "$proj" 2>/dev/null || echo "inconnu"
+    else
+        echo "inconnu"
+    fi
+}
+
+update_config_key() {
+    local key="$1"
+    local val="$2"
+    if [ ! -f "$CONF_FILE" ]; then
+        touch "$CONF_FILE"
+    fi
+    if grep -q "^${key}=" "$CONF_FILE" 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=\"${val}\"|" "$CONF_FILE"
+    else
+        echo "${key}=\"${val}\"" >> "$CONF_FILE"
+    fi
+}
+
+get_items_for_source() {
+    local src="$1"
+    local items=()
+    case "$src" in
+        favorites|fav)
+            if [ -f "$FAV_FILE" ]; then
+                while IFS= read -r id || [ -n "$id" ]; do
+                    id=$(echo "$id" | tr -d ' \r\n')
+                    if [ -n "$id" ] && [ -d "$WORKSHOP_DIR/$id" ]; then
+                        items+=("$id")
+                    fi
+                done < "$FAV_FILE"
+            fi
+            ;;
+        playlist:*)
+            local pname="${src#playlist:}"
+            local pfile="$PLAYLIST_DIR/${pname}.txt"
+            if [ -f "$pfile" ]; then
+                while IFS= read -r id || [ -n "$id" ]; do
+                    id=$(echo "$id" | tr -d ' \r\n')
+                    if [ -n "$id" ] && [ -d "$WORKSHOP_DIR/$id" ]; then
+                        items+=("$id")
+                    fi
+                done < "$pfile"
+            fi
+            ;;
+        all)
+            for d in "$WORKSHOP_DIR"/*; do
+                if [ -d "$d" ] && [ -f "$d/project.json" ]; then
+                    items+=("$(basename "$d")")
+                fi
+            done
+            ;;
+        *)
+            # Vérifier si c'est directement un nom de playlist
+            local pfile="$PLAYLIST_DIR/${src}.txt"
+            if [ -f "$pfile" ]; then
+                while IFS= read -r id || [ -n "$id" ]; do
+                    id=$(echo "$id" | tr -d ' \r\n')
+                    if [ -n "$id" ] && [ -d "$WORKSHOP_DIR/$id" ]; then
+                        items+=("$id")
+                    fi
+                done < "$pfile"
+            fi
+            ;;
+    esac
+    printf "%s\n" "${items[@]}"
+}
+
+record_history() {
+    local id="$1"
+    echo "$id" >> "$HISTORY_FILE"
+    if [ -f "$HISTORY_FILE" ] && [ "$(wc -l < "$HISTORY_FILE")" -gt 100 ]; then
+        tail -n 100 "$HISTORY_FILE" > "$HISTORY_FILE.tmp" && mv "$HISTORY_FILE.tmp" "$HISTORY_FILE"
+    fi
+}
+
+send_notify() {
+    local id="$1"
+    local title
+    title=$(get_title "$id")
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -a "Wallpaper Engine" -i preferences-desktop-wallpaper \
+            "Fond d'écran changé" "$title (ID: $id)" 2>/dev/null || true
+    fi
+}
+
+is_running() {
+    if [ -f "$PID_FILE" ]; then
+        local pid
+        pid=$(cat "$PID_FILE" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+get_pid() {
+    if is_running; then
+        cat "$PID_FILE" 2>/dev/null
+    else
+        echo ""
+    fi
+}
+
+start_daemon() {
+    if is_running; then
+        echo "Le démon de rotation est déjà actif (PID: $(get_pid))."
+        return 0
+    fi
+
+    update_config_key "ROTATION_ENABLED" "true"
+    if [ -n "$1" ]; then
+        update_config_key "ROTATION_INTERVAL" "$1"
+    fi
+    if [ -n "$2" ]; then
+        update_config_key "ROTATION_SOURCE" "$2"
+    fi
+    if [ -n "$3" ]; then
+        update_config_key "ROTATION_ORDER" "$3"
+    fi
+
+    setsid "$0" run </dev/null >/dev/null 2>&1 &
+    sleep 0.3
+
+    if is_running; then
+        local pid
+        pid=$(get_pid)
+        local interval="${ROTATION_INTERVAL:-10m}"
+        [ -n "$1" ] && interval="$1"
+        local sec
+        sec=$(parse_duration "$interval")
+        local fmt
+        fmt=$(format_duration "$sec")
+        echo "✓ Démon de rotation démarré avec succès (PID: $pid) !"
+        echo "• Intervalle : $fmt"
+        echo "• Source     : ${ROTATION_SOURCE:-favorites}"
+        echo "• Ordre      : ${ROTATION_ORDER:-random}"
+    else
+        echo "Erreur lors du démarrage du démon."
+        return 1
+    fi
+}
+
+stop_daemon() {
+    update_config_key "ROTATION_ENABLED" "false"
+    if is_running; then
+        local pid
+        pid=$(get_pid)
+        kill "$pid" 2>/dev/null
+        sleep 0.2
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -9 "$pid" 2>/dev/null
+        fi
+        rm -f "$PID_FILE"
+        echo "✓ Démon de rotation arrêté."
+    else
+        rm -f "$PID_FILE"
+        echo "Le démon de rotation n'était pas actif."
+    fi
+}
+
+status_daemon() {
+    echo "=================================================="
+    echo "         STATUT DE LA ROTATION AUTOMATIQUE        "
+    echo "=================================================="
+    if is_running; then
+        local pid
+        pid=$(get_pid)
+        echo "• État        : ACTIF (PID: $pid)"
+    else
+        echo "• État        : INACTIF"
+    fi
+
+    # Recharger conf
+    [ -f "$CONF_FILE" ] && source "$CONF_FILE"
+
+    local interval="${ROTATION_INTERVAL:-10m}"
+    local sec
+    sec=$(parse_duration "$interval")
+    local fmt
+    fmt=$(format_duration "$sec")
+    echo "• Intervalle  : $fmt ($sec secondes)"
+    echo "• Source      : ${ROTATION_SOURCE:-favorites}"
+    echo "• Ordre       : ${ROTATION_ORDER:-random}"
+    echo "• Notifs      : ${ROTATION_NOTIFY:-false}"
+
+    # Afficher le nombre d'éléments disponibles dans la source
+    mapfile -t items < <(get_items_for_source "${ROTATION_SOURCE:-favorites}")
+    echo "• Éléments    : ${#items[@]} fond(s) dans la source active"
+    if [ -f "$LOG_FILE" ]; then
+        local last_change
+        last_change=$(tail -n 1 "$LOG_FILE" 2>/dev/null)
+        [ -n "$last_change" ] && echo "• Dernier log : $last_change"
+    fi
+    echo "=================================================="
+}
+
+next_wallpaper() {
+    [ -f "$CONF_FILE" ] && source "$CONF_FILE"
+    mapfile -t items < <(get_items_for_source "${ROTATION_SOURCE:-favorites}")
+    if [ ${#items[@]} -eq 0 ]; then
+        mapfile -t items < <(get_items_for_source "all")
+    fi
+
+    if [ ${#items[@]} -eq 0 ]; then
+        echo "Aucun fond d'écran disponible pour la rotation."
+        return 1
+    fi
+
+    local order="${ROTATION_ORDER:-sequential}"
+    local next_id=""
+
+    if [ "$order" = "random" ]; then
+        local candidates=()
+        for id in "${items[@]}"; do
+            [ "$id" != "$WALLPAPER_ID" ] && candidates+=("$id")
+        done
+        if [ ${#candidates[@]} -gt 0 ]; then
+            next_id="${candidates[$((RANDOM % ${#candidates[@]}))]}"
+        else
+            next_id="${items[0]}"
+        fi
+    else
+        local curr_idx=-1
+        for i in "${!items[@]}"; do
+            if [ "${items[$i]}" = "$WALLPAPER_ID" ]; then
+                curr_idx=$i
+                break
+            fi
+        done
+        local next_idx=$(( (curr_idx + 1) % ${#items[@]} ))
+        next_id="${items[$next_idx]}"
+    fi
+
+    if [ -n "$next_id" ]; then
+        "$SET_WALLPAPER" "$next_id"
+        record_history "$next_id"
+        if is_running; then
+            kill -USR1 "$(get_pid)" 2>/dev/null
+        fi
+    fi
+}
+
+prev_wallpaper() {
+    [ -f "$CONF_FILE" ] && source "$CONF_FILE"
+    mapfile -t items < <(get_items_for_source "${ROTATION_SOURCE:-favorites}")
+    if [ ${#items[@]} -eq 0 ]; then
+        mapfile -t items < <(get_items_for_source "all")
+    fi
+
+    if [ ${#items[@]} -eq 0 ]; then
+        echo "Aucun fond d'écran disponible."
+        return 1
+    fi
+
+    local curr_idx=-1
+    for i in "${!items[@]}"; do
+        if [ "${items[$i]}" = "$WALLPAPER_ID" ]; then
+            curr_idx=$i
+            break
+        fi
+    done
+
+    local prev_idx
+    if [ "$curr_idx" -le 0 ]; then
+        prev_idx=$(( ${#items[@]} - 1 ))
+    else
+        prev_idx=$(( curr_idx - 1 ))
+    fi
+
+    local prev_id="${items[$prev_idx]}"
+    if [ -n "$prev_id" ]; then
+        "$SET_WALLPAPER" "$prev_id"
+        record_history "$prev_id"
+        if is_running; then
+            kill -USR1 "$(get_pid)" 2>/dev/null
+        fi
+    fi
+}
+
+random_wallpaper() {
+    [ -f "$CONF_FILE" ] && source "$CONF_FILE"
+    mapfile -t items < <(get_items_for_source "${ROTATION_SOURCE:-favorites}")
+    if [ ${#items[@]} -eq 0 ]; then
+        mapfile -t items < <(get_items_for_source "all")
+    fi
+
+    if [ ${#items[@]} -eq 0 ]; then
+        echo "Aucun fond d'écran disponible."
+        return 1
+    fi
+
+    local candidates=()
+    for id in "${items[@]}"; do
+        [ "$id" != "$WALLPAPER_ID" ] && candidates+=("$id")
+    done
+    local rnd_id
+    if [ ${#candidates[@]} -gt 0 ]; then
+        rnd_id="${candidates[$((RANDOM % ${#candidates[@]}))]}"
+    else
+        rnd_id="${items[0]}"
+    fi
+
+    if [ -n "$rnd_id" ]; then
+        "$SET_WALLPAPER" "$rnd_id"
+        record_history "$rnd_id"
+        if is_running; then
+            kill -USR1 "$(get_pid)" 2>/dev/null
+        fi
+    fi
+}
+
+run_daemon_loop() {
+    echo $$ > "$PID_FILE"
+    local sleep_subpid=""
+    local term_received=0
+
+    cleanup() {
+        term_received=1
+        [ -n "$sleep_subpid" ] && kill "$sleep_subpid" 2>/dev/null
+        rm -f "$PID_FILE"
+        exit 0
+    }
+
+    local usr1_received=0
+    handle_usr1() {
+        usr1_received=1
+        [ -n "$sleep_subpid" ] && kill "$sleep_subpid" 2>/dev/null
+    }
+
+    trap cleanup SIGTERM SIGINT SIGHUP
+    trap handle_usr1 SIGUSR1
+
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Démon de rotation démarré (PID: $$)" >> "$LOG_FILE"
+
+    while [ "$term_received" -eq 0 ]; do
+        [ -f "$CONF_FILE" ] && source "$CONF_FILE"
+
+        if [ "${ROTATION_ENABLED:-false}" != "true" ]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Rotation désactivée dans la configuration. Arrêt du démon." >> "$LOG_FILE"
+            break
+        fi
+
+        local interval="${ROTATION_INTERVAL:-10m}"
+        local sec
+        sec=$(parse_duration "$interval")
+        [ "$sec" -le 0 ] && sec=600
+
+        usr1_received=0
+        # Attente jusqu'à l'intervalle ou réception d'un signal
+        sleep "$sec" &
+        sleep_subpid=$!
+        wait "$sleep_subpid" 2>/dev/null
+        sleep_subpid=""
+
+        [ "$term_received" -ne 0 ] && break
+
+        # Si réveillé par USR1 (changement manuel ou redémarrage du timer), on réinitialise le délai
+        if [ "$usr1_received" -eq 1 ]; then
+            usr1_received=0
+            continue
+        fi
+
+        # Re-vérifier après réveil
+        [ -f "$CONF_FILE" ] && source "$CONF_FILE"
+        [ "${ROTATION_ENABLED:-false}" != "true" ] && break
+
+        mapfile -t items < <(get_items_for_source "${ROTATION_SOURCE:-favorites}")
+        if [ ${#items[@]} -eq 0 ]; then
+            mapfile -t items < <(get_items_for_source "all")
+        fi
+
+        if [ ${#items[@]} -gt 0 ]; then
+            local order="${ROTATION_ORDER:-random}"
+            local next_id=""
+            if [ "$order" = "sequential" ]; then
+                local curr_idx=-1
+                for i in "${!items[@]}"; do
+                    if [ "${items[$i]}" = "$WALLPAPER_ID" ]; then
+                        curr_idx=$i
+                        break
+                    fi
+                done
+                local next_idx=$(( (curr_idx + 1) % ${#items[@]} ))
+                next_id="${items[$next_idx]}"
+            else
+                local candidates=()
+                for id in "${items[@]}"; do
+                    [ "$id" != "$WALLPAPER_ID" ] && candidates+=("$id")
+                done
+                if [ ${#candidates[@]} -gt 0 ]; then
+                    next_id="${candidates[$((RANDOM % ${#candidates[@]}))]}"
+                else
+                    next_id="${items[0]}"
+                fi
+            fi
+
+            if [ -n "$next_id" ] && [ "$next_id" != "$WALLPAPER_ID" ]; then
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] Rotation vers: $next_id ($(get_title "$next_id"))" >> "$LOG_FILE"
+                "$SET_WALLPAPER" "$next_id" --quiet
+                record_history "$next_id"
+                if [ "${ROTATION_NOTIFY:-false}" = "true" ]; then
+                    send_notify "$next_id"
+                fi
+            fi
+        fi
+    done
+
+    rm -f "$PID_FILE"
+}
+
+case "$1" in
+    start)
+        shift
+        start_daemon "$@"
+        ;;
+    stop)
+        stop_daemon
+        ;;
+    restart)
+        shift
+        stop_daemon
+        sleep 0.5
+        start_daemon "$@"
+        ;;
+    status)
+        status_daemon
+        ;;
+    next)
+        next_wallpaper
+        ;;
+    prev)
+        prev_wallpaper
+        ;;
+    random)
+        random_wallpaper
+        ;;
+    run)
+        run_daemon_loop
+        ;;
+    *)
+        echo "Usage: wallpaper-daemon {start|stop|restart|status|next|prev|random|run}"
+        exit 1
+        ;;
+esac

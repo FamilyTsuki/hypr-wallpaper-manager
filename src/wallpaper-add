@@ -1,0 +1,774 @@
+#!/bin/bash
+
+# ==============================================================================
+# wallpaper-add : Gestionnaire de playlists, favoris et timer pour Wallpaper Engine
+# ==============================================================================
+
+BASE_DIR="$HOME/.config/hypr/wallpaper_engine"
+CONF_FILE="$HOME/.config/hypr/wallpaper_engine.conf"
+WORKSHOP_DIR="$HOME/.local/share/Steam/steamapps/workshop/content/431960"
+PID_FILE="$BASE_DIR/rotation.pid"
+LOG_FILE="$BASE_DIR/rotation.log"
+FAV_FILE="$BASE_DIR/favorites.txt"
+HISTORY_FILE="$BASE_DIR/history.txt"
+PLAYLIST_DIR="$BASE_DIR/playlists"
+SET_WALLPAPER="set-wallpaper"
+DAEMON="wallpaper-daemon"
+
+mkdir -p "$BASE_DIR" "$PLAYLIST_DIR"
+touch "$FAV_FILE" "$HISTORY_FILE"
+
+# Charger la configuration enregistrée
+if [ -f "$CONF_FILE" ]; then
+    # shellcheck source=/dev/null
+    source "$CONF_FILE"
+fi
+
+get_title() {
+    local id="$1"
+    local proj="$WORKSHOP_DIR/$id/project.json"
+    if [ -f "$proj" ]; then
+        jq -r '.title // "Sans titre"' "$proj" 2>/dev/null || echo "Sans titre"
+    else
+        echo "Inconnu"
+    fi
+}
+
+get_type() {
+    local id="$1"
+    local proj="$WORKSHOP_DIR/$id/project.json"
+    if [ -f "$proj" ]; then
+        jq -r '.type // "inconnu"' "$proj" 2>/dev/null || echo "inconnu"
+    else
+        echo "inconnu"
+    fi
+}
+
+update_config_key() {
+    local key="$1"
+    local val="$2"
+    if [ ! -f "$CONF_FILE" ]; then
+        touch "$CONF_FILE"
+    fi
+    if grep -q "^${key}=" "$CONF_FILE" 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=\"${val}\"|" "$CONF_FILE"
+    else
+        echo "${key}=\"${val}\"" >> "$CONF_FILE"
+    fi
+}
+
+parse_duration() {
+    local str="$1"
+    str=$(echo "$str" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+    if [[ "$str" =~ ^([0-9]+)s$ ]]; then
+        echo "${BASH_REMATCH[1]}"
+    elif [[ "$str" =~ ^([0-9]+)m$ ]]; then
+        echo "$((BASH_REMATCH[1] * 60))"
+    elif [[ "$str" =~ ^([0-9]+)h$ ]]; then
+        echo "$((BASH_REMATCH[1] * 3600))"
+    elif [[ "$str" =~ ^([0-9]+)d$ ]]; then
+        echo "$((BASH_REMATCH[1] * 86400))"
+    elif [[ "$str" =~ ^([0-9]+)$ ]]; then
+        echo "$((str * 60))"
+    else
+        echo "-1"
+    fi
+}
+
+format_duration() {
+    local s="$1"
+    if [ "$s" -ge 3600 ]; then
+        local h=$((s / 3600))
+        local m=$(((s % 3600) / 60))
+        if [ "$m" -gt 0 ]; then
+            echo "${h}h ${m}m"
+        else
+            echo "${h}h"
+        fi
+    elif [ "$s" -ge 60 ]; then
+        local m=$((s / 60))
+        local sec=$((s % 60))
+        if [ "$sec" -gt 0 ]; then
+            echo "${m}m ${sec}s"
+        else
+            echo "${m}m"
+        fi
+    else
+        echo "${s}s"
+    fi
+}
+
+show_help() {
+    echo "================================================================================"
+    echo "       WALLPAPER-ADD : Gestion des Playlists, Favoris & Rotation               "
+    echo "================================================================================"
+    echo "Usage: wallpaper-add [COMMANDE] [ARGUMENTS]"
+    echo ""
+    echo "⭐ GESTION DES FAVORIS :"
+    echo "  wallpaper-add fav                       Ajoute le fond d'écran actif aux favoris"
+    echo "  wallpaper-add fav <ID>                  Ajoute l'ID spécifié aux favoris"
+    echo "  wallpaper-add fav add <ID>              Ajoute l'ID spécifié aux favoris"
+    echo "  wallpaper-add fav remove <ID>           Retire l'ID des favoris (alias: rm, unfav)"
+    echo "  wallpaper-add fav list                  Liste tous vos favoris"
+    echo "  wallpaper-add fav play [durée]          Lance le diaporama automatique sur les favoris"
+    echo "  wallpaper-add fav pick                  Choisit un favori interactivement (fzf)"
+    echo ""
+    echo "📂 GESTION DES PLAYLISTS :"
+    echo "  wallpaper-add playlist create <nom>     Crée une nouvelle playlist"
+    echo "  wallpaper-add playlist add <ID> [nom]   Ajoute un fond d'écran (défaut: 'default')"
+    echo "  wallpaper-add playlist remove <ID> [n]  Retire un fond d'écran d'une playlist (alias: rm)"
+    echo "  wallpaper-add playlist list             Liste toutes les playlists existantes"
+    echo "  wallpaper-add playlist show <nom>       Affiche le contenu détaillé d'une playlist"
+    echo "  wallpaper-add playlist play <nom> [t]   Lance le diaporama automatique sur la playlist"
+    echo "  wallpaper-add playlist delete <nom>     Supprime une playlist"
+    echo "  wallpaper-add playlist pick [nom]       Choisit un fond de la playlist (fzf)"
+    echo ""
+    echo "⏱️  CHANGEMENT AUTOMATIQUE (TIMER & INTERVALLE) :"
+    echo "  wallpaper-add timer <durée>             Règle l'intervalle et active la rotation"
+    echo "                                          (ex: 5m, 10m, 30m, 1h, 45s, ou 15 en minutes)"
+    echo "  wallpaper-add timer start [t] [source]  Démarre la rotation (sources: fav, playlist:<nom>, all)"
+    echo "  wallpaper-add timer stop                Arrête la rotation automatique"
+    echo "  wallpaper-add timer status              Affiche l'état du timer et de la rotation"
+    echo "  wallpaper-add timer notify <on|off>     Active/désactive les notifications visuelles"
+    echo ""
+    echo "🎮 CONTRÔLES RAPIDES :"
+    echo "  wallpaper-add next                      Passe au fond d'écran suivant"
+    echo "  wallpaper-add prev                      Revient au fond d'écran précédent"
+    echo "  wallpaper-add random                    Met un fond d'écran aléatoire (source active)"
+    echo "  wallpaper-add order [random|seq]        Change l'ordre de défilement"
+    echo "  wallpaper-add pick                      Recherche et sélection visuelle interactive (fzf)"
+    echo "  wallpaper-add status                    Affiche le statut global complet"
+    echo ""
+    echo "Exemples :"
+    echo "  wallpaper-add fav                       # Met le fond actuel en favori"
+    echo "  wallpaper-add fav 3599761711            # Ajoute cet ID aux favoris"
+    echo "  wallpaper-add timer 10m                 # Change de fond toutes les 10 minutes"
+    echo "  wallpaper-add playlist create anime     # Crée la playlist 'anime'"
+    echo "  wallpaper-add playlist add 2908791635 anime # Ajoute un fond à 'anime'"
+    echo "  wallpaper-add playlist play anime 5m    # Joue 'anime' avec rotation toutes les 5m"
+    echo "================================================================================"
+}
+
+status_all() {
+    [ -f "$CONF_FILE" ] && source "$CONF_FILE"
+    echo "=================================================="
+    echo "         ÉTAT WALLPAPER ENGINE & PLAYLISTS        "
+    echo "=================================================="
+    local title="Aucun"
+    local type="-"
+    if [ -n "$WALLPAPER_ID" ]; then
+        title=$(get_title "$WALLPAPER_ID")
+        type=$(get_type "$WALLPAPER_ID")
+    fi
+    echo "• Fond actif  : $title (ID: ${WALLPAPER_ID:-aucun}, Type: $type)"
+
+    local is_fav="Non"
+    if [ -n "$WALLPAPER_ID" ] && grep -qx "$WALLPAPER_ID" "$FAV_FILE" 2>/dev/null; then
+        is_fav="Oui ⭐"
+    fi
+    local nb_favs=0
+    [ -f "$FAV_FILE" ] && nb_favs=$(grep -cv '^$' "$FAV_FILE" 2>/dev/null || echo 0)
+    echo "• Favori      : $is_fav ($nb_favs favori(s) au total)"
+
+    local nb_playlists=0
+    if [ -d "$PLAYLIST_DIR" ]; then
+        nb_playlists=$(find "$PLAYLIST_DIR" -maxdepth 1 -name "*.txt" | wc -l)
+    fi
+    echo "• Playlists   : $nb_playlists playlist(s) disponible(s)"
+
+    local is_run="Inactif"
+    if [ -f "$PID_FILE" ]; then
+        local pid
+        pid=$(cat "$PID_FILE" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            is_run="Actif 🔄 (PID: $pid)"
+        fi
+    fi
+    local interval="${ROTATION_INTERVAL:-10m}"
+    local sec
+    sec=$(parse_duration "$interval")
+    local fmt
+    fmt=$(format_duration "$sec")
+    echo "• Rotation    : $is_run"
+    echo "• Intervalle  : $fmt"
+    echo "• Source      : ${ROTATION_SOURCE:-favorites}"
+    echo "• Ordre       : ${ROTATION_ORDER:-random}"
+    echo "=================================================="
+}
+
+# ==============================================================================
+# FONCTIONS FAVORIS
+# ==============================================================================
+fav_add() {
+    local target_id="$1"
+    if [ -z "$target_id" ]; then
+        # Prendre le fond actif si aucun ID spécifié
+        [ -f "$CONF_FILE" ] && source "$CONF_FILE"
+        target_id="$WALLPAPER_ID"
+    fi
+
+    if [ -z "$target_id" ]; then
+        echo "Erreur : Aucun fond d'écran actif et aucun ID spécifié."
+        echo "Utilisation : wallpaper-add fav <ID_STEAM>"
+        return 1
+    fi
+
+    if [ ! -d "$WORKSHOP_DIR/$target_id" ]; then
+        echo "Erreur : L'ID Steam $target_id n'existe pas dans :"
+        echo "  $WORKSHOP_DIR/$target_id"
+        return 1
+    fi
+
+    if grep -qx "$target_id" "$FAV_FILE" 2>/dev/null; then
+        local title
+        title=$(get_title "$target_id")
+        echo "⭐ Le fond d'écran '$title' (ID: $target_id) est déjà dans vos favoris."
+        return 0
+    fi
+
+    echo "$target_id" >> "$FAV_FILE"
+    sort -u "$FAV_FILE" -o "$FAV_FILE"
+    local title
+    title=$(get_title "$target_id")
+    echo "⭐ Ajouté aux favoris avec succès !"
+    echo "• Titre : $title"
+    echo "• ID    : $target_id"
+}
+
+fav_remove() {
+    local target_id="$1"
+    if [ -z "$target_id" ]; then
+        echo "Erreur : Spécifiez un ID à retirer des favoris."
+        echo "Utilisation : wallpaper-add fav remove <ID_STEAM>"
+        return 1
+    fi
+
+    if ! grep -qx "$target_id" "$FAV_FILE" 2>/dev/null; then
+        echo "L'ID $target_id n'est pas dans vos favoris."
+        return 0
+    fi
+
+    grep -vFx "$target_id" "$FAV_FILE" > "$FAV_FILE.tmp" && mv "$FAV_FILE.tmp" "$FAV_FILE"
+    local title
+    title=$(get_title "$target_id")
+    echo "✓ Fond d'écran '$title' (ID: $target_id) retiré des favoris."
+}
+
+fav_list() {
+    [ -f "$CONF_FILE" ] && source "$CONF_FILE"
+    echo "================================================================================"
+    echo "                             VOS FONDS D'ÉCRAN FAVORIS                          "
+    echo "================================================================================"
+    if [ ! -f "$FAV_FILE" ] || [ ! -s "$FAV_FILE" ]; then
+        echo "Aucun favori enregistré pour le moment."
+        echo "Pour en ajouter un : wallpaper-add fav <ID_STEAM>  ou  wallpaper-add fav"
+        echo "================================================================================"
+        return 0
+    fi
+
+    printf "  %-12s | %-8s | %s\n" "ID" "TYPE" "TITRE"
+    echo "--------------------------------------------------------------------------------"
+    while IFS= read -r id || [ -n "$id" ]; do
+        id=$(echo "$id" | tr -d ' \r\n')
+        [ -z "$id" ] && continue
+        local title
+        title=$(get_title "$id")
+        local type
+        type=$(get_type "$id")
+        local star="⭐"
+        if [ "$id" = "$WALLPAPER_ID" ]; then
+            printf "▶ %-12s | %-8s | %s [ACTIF]\n" "$id" "$type" "$title"
+        else
+            printf "  %-12s | %-8s | %s\n" "$id" "$type" "$title"
+        fi
+    done < "$FAV_FILE"
+    echo "================================================================================"
+}
+
+fav_play() {
+    local duration="$1"
+    [ -n "$duration" ] && update_config_key "ROTATION_INTERVAL" "$duration"
+    update_config_key "ROTATION_SOURCE" "favorites"
+    "$DAEMON" restart "$duration" "favorites"
+}
+
+fav_pick() {
+    if ! command -v fzf >/dev/null 2>&1; then
+        echo "fzf n'est pas installé."
+        fav_list
+        return 1
+    fi
+    if [ ! -f "$FAV_FILE" ] || [ ! -s "$FAV_FILE" ]; then
+        echo "Aucun favori pour le moment."
+        return 0
+    fi
+
+    local lines=()
+    while IFS= read -r id || [ -n "$id" ]; do
+        id=$(echo "$id" | tr -d ' \r\n')
+        [ -z "$id" ] && continue
+        local title
+        title=$(get_title "$id")
+        lines+=("$id - $title")
+    done < "$FAV_FILE"
+
+    local choice
+    choice=$(printf "%s\n" "${lines[@]}" | fzf --prompt="Choisir un favori : " --height=40%)
+    if [ -n "$choice" ]; then
+        local sel_id
+        sel_id=$(echo "$choice" | awk '{print $1}')
+        "$SET_WALLPAPER" "$sel_id"
+    fi
+}
+
+# ==============================================================================
+# FONCTIONS PLAYLISTS
+# ==============================================================================
+playlist_create() {
+    local name="$1"
+    if [ -z "$name" ]; then
+        echo "Erreur : Spécifiez un nom pour la playlist."
+        echo "Exemple : wallpaper-add playlist create anime"
+        return 1
+    fi
+    # Nettoyer nom
+    name=$(echo "$name" | tr -cd 'a-zA-Z0-9_-')
+    local file="$PLAYLIST_DIR/${name}.txt"
+    if [ -f "$file" ]; then
+        echo "La playlist '$name' existe déjà."
+        return 0
+    fi
+    touch "$file"
+    echo "✓ Playlist '$name' créée avec succès !"
+    echo "Pour y ajouter des fonds : wallpaper-add playlist add <ID> $name"
+}
+
+playlist_add() {
+    local target_id="$1"
+    local name="${2:-default}"
+
+    # Si le 1er arg est omis
+    if [ -z "$target_id" ]; then
+        [ -f "$CONF_FILE" ] && source "$CONF_FILE"
+        target_id="$WALLPAPER_ID"
+    fi
+
+    if [ -z "$target_id" ]; then
+        echo "Erreur : Aucun fond d'écran actif et aucun ID spécifié."
+        echo "Utilisation : wallpaper-add playlist add <ID> [nom_playlist]"
+        return 1
+    fi
+
+    if [ ! -d "$WORKSHOP_DIR/$target_id" ]; then
+        echo "Erreur : L'ID Steam $target_id n'existe pas dans :"
+        echo "  $WORKSHOP_DIR/$target_id"
+        return 1
+    fi
+
+    name=$(echo "$name" | tr -cd 'a-zA-Z0-9_-')
+    local file="$PLAYLIST_DIR/${name}.txt"
+    touch "$file"
+
+    if grep -qx "$target_id" "$file" 2>/dev/null; then
+        local title
+        title=$(get_title "$target_id")
+        echo "Le fond d'écran '$title' (ID: $target_id) est déjà dans la playlist '$name'."
+        return 0
+    fi
+
+    echo "$target_id" >> "$file"
+    sort -u "$file" -o "$file"
+    local title
+    title=$(get_title "$target_id")
+    echo "✓ Ajouté à la playlist '$name' avec succès !"
+    echo "• Titre : $title"
+    echo "• ID    : $target_id"
+}
+
+playlist_remove() {
+    local target_id="$1"
+    local name="${2:-default}"
+    if [ -z "$target_id" ]; then
+        echo "Erreur : Spécifiez un ID à retirer de la playlist."
+        echo "Utilisation : wallpaper-add playlist remove <ID> [nom_playlist]"
+        return 1
+    fi
+
+    name=$(echo "$name" | tr -cd 'a-zA-Z0-9_-')
+    local file="$PLAYLIST_DIR/${name}.txt"
+    if [ ! -f "$file" ] || ! grep -qx "$target_id" "$file" 2>/dev/null; then
+        echo "L'ID $target_id n'est pas présent dans la playlist '$name'."
+        return 0
+    fi
+
+    grep -vFx "$target_id" "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+    local title
+    title=$(get_title "$target_id")
+    echo "✓ Fond d'écran '$title' (ID: $target_id) retiré de la playlist '$name'."
+}
+
+playlist_list() {
+    echo "=================================================="
+    echo "               LISTE DES PLAYLISTS                "
+    echo "=================================================="
+    local count=0
+    for f in "$PLAYLIST_DIR"/*.txt; do
+        if [ -f "$f" ]; then
+            local name
+            name=$(basename "$f" .txt)
+            local nb
+            nb=$(grep -cv '^$' "$f" 2>/dev/null || echo 0)
+            printf "• %-20s (%d fond(s))\n" "$name" "$nb"
+            count=$((count + 1))
+        fi
+    done
+    if [ "$count" -eq 0 ]; then
+        echo "Aucune playlist créée."
+        echo "Pour créer une playlist : wallpaper-add playlist create <nom>"
+    fi
+    echo "=================================================="
+}
+
+playlist_show() {
+    local name="${1:-default}"
+    name=$(echo "$name" | tr -cd 'a-zA-Z0-9_-')
+    local file="$PLAYLIST_DIR/${name}.txt"
+    if [ ! -f "$file" ]; then
+        echo "Erreur : La playlist '$name' n'existe pas."
+        return 1
+    fi
+
+    [ -f "$CONF_FILE" ] && source "$CONF_FILE"
+    echo "================================================================================"
+    echo "                      CONTENU DE LA PLAYLIST : $name                            "
+    echo "================================================================================"
+    if [ ! -s "$file" ]; then
+        echo "Cette playlist est vide."
+        echo "Ajouter un fond : wallpaper-add playlist add <ID> $name"
+        echo "================================================================================"
+        return 0
+    fi
+
+    printf "  %-12s | %-8s | %s\n" "ID" "TYPE" "TITRE"
+    echo "--------------------------------------------------------------------------------"
+    while IFS= read -r id || [ -n "$id" ]; do
+        id=$(echo "$id" | tr -d ' \r\n')
+        [ -z "$id" ] && continue
+        local title
+        title=$(get_title "$id")
+        local type
+        type=$(get_type "$id")
+        if [ "$id" = "$WALLPAPER_ID" ]; then
+            printf "▶ %-12s | %-8s | %s [ACTIF]\n" "$id" "$type" "$title"
+        else
+            printf "  %-12s | %-8s | %s\n" "$id" "$type" "$title"
+        fi
+    done < "$file"
+    echo "================================================================================"
+}
+
+playlist_delete() {
+    local name="$1"
+    if [ -z "$name" ]; then
+        echo "Erreur : Spécifiez le nom de la playlist à supprimer."
+        return 1
+    fi
+    name=$(echo "$name" | tr -cd 'a-zA-Z0-9_-')
+    local file="$PLAYLIST_DIR/${name}.txt"
+    if [ -f "$file" ]; then
+        rm -f "$file"
+        echo "✓ Playlist '$name' supprimée."
+    else
+        echo "La playlist '$name' n'existe pas."
+    fi
+}
+
+playlist_play() {
+    local name="${1:-default}"
+    local duration="$2"
+    name=$(echo "$name" | tr -cd 'a-zA-Z0-9_-')
+    local file="$PLAYLIST_DIR/${name}.txt"
+    if [ ! -f "$file" ] || [ ! -s "$file" ]; then
+        echo "Erreur : La playlist '$name' est vide ou n'existe pas."
+        return 1
+    fi
+    update_config_key "ACTIVE_PLAYLIST" "$name"
+    update_config_key "ROTATION_SOURCE" "playlist:$name"
+    [ -n "$duration" ] && update_config_key "ROTATION_INTERVAL" "$duration"
+    "$DAEMON" restart "$duration" "playlist:$name"
+}
+
+playlist_pick() {
+    local name="${1:-default}"
+    name=$(echo "$name" | tr -cd 'a-zA-Z0-9_-')
+    local file="$PLAYLIST_DIR/${name}.txt"
+    if ! command -v fzf >/dev/null 2>&1; then
+        echo "fzf n'est pas disponible."
+        playlist_show "$name"
+        return 1
+    fi
+    if [ ! -f "$file" ] || [ ! -s "$file" ]; then
+        echo "La playlist '$name' est vide ou introuvable."
+        return 0
+    fi
+
+    local lines=()
+    while IFS= read -r id || [ -n "$id" ]; do
+        id=$(echo "$id" | tr -d ' \r\n')
+        [ -z "$id" ] && continue
+        local title
+        title=$(get_title "$id")
+        lines+=("$id - $title")
+    done < "$file"
+
+    local choice
+    choice=$(printf "%s\n" "${lines[@]}" | fzf --prompt="Playlist ($name) : " --height=40%)
+    if [ -n "$choice" ]; then
+        local sel_id
+        sel_id=$(echo "$choice" | awk '{print $1}')
+        "$SET_WALLPAPER" "$sel_id"
+    fi
+}
+
+# ==============================================================================
+# FONCTIONS TIMER / INTERVALLE DE CHANGEMENT
+# ==============================================================================
+timer_set() {
+    local str="$1"
+    if [ -z "$str" ]; then
+        "$DAEMON" status
+        return 0
+    fi
+
+    local sec
+    sec=$(parse_duration "$str")
+    if [ "$sec" -le 0 ]; then
+        echo "Erreur : Durée invalide '$str'."
+        echo "Exemples : 5m, 10m, 30m, 1h, 45s, ou 15 (minutes)"
+        return 1
+    fi
+
+    update_config_key "ROTATION_INTERVAL" "$str"
+    local fmt
+    fmt=$(format_duration "$sec")
+    echo "✓ Intervalle réglé à : $fmt ($sec secondes)."
+    echo "Redémarrage de la rotation..."
+    "$DAEMON" restart "$str"
+}
+
+# Recherche visuelle globale (fzf)
+pick_global() {
+    if ! command -v fzf >/dev/null 2>&1; then
+        echo "fzf n'est pas installé."
+        "$SET_WALLPAPER" --list
+        return 1
+    fi
+
+    local lines=()
+    for d in "$WORKSHOP_DIR"/*; do
+        if [ -d "$d" ] && [ -f "$d/project.json" ]; then
+            local id
+            id=$(basename "$d")
+            local title
+            title=$(get_title "$id")
+            local type
+            type=$(get_type "$id")
+            lines+=("$id | $type | $title")
+        fi
+    done
+
+    local choice
+    choice=$(printf "%s\n" "${lines[@]}" | fzf --prompt="Choisir fond d'écran : " --height=50%)
+    if [ -n "$choice" ]; then
+        local sel_id
+        sel_id=$(echo "$choice" | awk '{print $1}')
+        "$SET_WALLPAPER" "$sel_id"
+    fi
+}
+
+# ==============================================================================
+# ROUTEUR PRINCIPAL
+# ==============================================================================
+if [ $# -eq 0 ]; then
+    show_help
+    status_all
+    exit 0
+fi
+
+CMD="$1"
+shift
+
+case "$CMD" in
+    -h|--help|help)
+        show_help
+        exit 0
+        ;;
+    status|--status)
+        status_all
+        exit 0
+        ;;
+    # GESTION DES FAVORIS
+    fav|--fav|favorite|favorites)
+        sub="$1"
+        if [ -z "$sub" ]; then
+            # wallpaper-add fav -> ajoute le fond actif aux favoris
+            fav_add
+        elif [[ "$sub" =~ ^[0-9]+$ ]]; then
+            # wallpaper-add fav <ID>
+            fav_add "$sub"
+        else
+            shift
+            case "$sub" in
+                add)
+                    fav_add "$1"
+                    ;;
+                rm|remove|delete|del|unfav)
+                    fav_remove "$1"
+                    ;;
+                list|ls)
+                    fav_list
+                    ;;
+                play)
+                    fav_play "$1"
+                    ;;
+                pick)
+                    fav_pick
+                    ;;
+                *)
+                    echo "Sous-commande inconnue pour fav : $sub"
+                    echo "Commandes : fav add <ID>, fav rm <ID>, fav list, fav play [t]"
+                    exit 1
+                    ;;
+            esac
+        fi
+        ;;
+    unfav|--unfav)
+        fav_remove "$1"
+        ;;
+    fav-list|--fav-list)
+        fav_list
+        ;;
+    # GESTION DES PLAYLISTS
+    playlist|--playlist|pl)
+        sub="$1"
+        if [ -z "$sub" ]; then
+            playlist_list
+        elif [[ "$sub" =~ ^[0-9]+$ ]]; then
+            # wallpaper-add playlist <ID> [nom]
+            shift
+            playlist_add "$sub" "$1"
+        else
+            shift
+            case "$sub" in
+                create|new)
+                    playlist_create "$1"
+                    ;;
+                add)
+                    playlist_add "$1" "$2"
+                    ;;
+                rm|remove|delete|del)
+                    if [[ "$1" =~ ^[0-9]+$ ]]; then
+                        playlist_remove "$1" "$2"
+                    else
+                        playlist_delete "$1"
+                    fi
+                    ;;
+                list|ls)
+                    if [ -n "$1" ]; then
+                        playlist_show "$1"
+                    else
+                        playlist_list
+                    fi
+                    ;;
+                show)
+                    playlist_show "$1"
+                    ;;
+                play)
+                    playlist_play "$1" "$2"
+                    ;;
+                pick)
+                    playlist_pick "$1"
+                    ;;
+                *)
+                    # Si c'est un nom de playlist existante, on l'affiche
+                    if [ -f "$PLAYLIST_DIR/${sub}.txt" ]; then
+                        playlist_show "$sub"
+                    else
+                        echo "Sous-commande inconnue pour playlist : $sub"
+                        echo "Commandes : playlist create <nom>, playlist add <ID> [nom], playlist list, playlist play <nom>"
+                        exit 1
+                    fi
+                    ;;
+            esac
+        fi
+        ;;
+    # GESTION DU TIMER / ROTATION
+    timer|--timer|interval|--interval)
+        sub="$1"
+        if [ -z "$sub" ]; then
+            "$DAEMON" status
+        elif [ "$sub" = "start" ]; then
+            shift
+            "$DAEMON" start "$1" "$2" "$3"
+        elif [ "$sub" = "stop" ]; then
+            "$DAEMON" stop
+        elif [ "$sub" = "status" ]; then
+            "$DAEMON" status
+        elif [ "$sub" = "restart" ]; then
+            shift
+            "$DAEMON" restart "$@"
+        elif [ "$sub" = "notify" ]; then
+            shift
+            if [ "$1" = "on" ] || [ "$1" = "true" ] || [ "$1" = "1" ]; then
+                update_config_key "ROTATION_NOTIFY" "true"
+                echo "✓ Notifications bureau activées."
+            else
+                update_config_key "ROTATION_NOTIFY" "false"
+                echo "✓ Notifications bureau désactivées."
+            fi
+        else
+            # wallpaper-add timer 10m
+            timer_set "$sub"
+        fi
+        ;;
+    timer-stop|--timer-stop|stop-timer)
+        "$DAEMON" stop
+        ;;
+    # CONTRÔLES RAPIDES
+    next|--next)
+        "$DAEMON" next
+        ;;
+    prev|--prev)
+        "$DAEMON" prev
+        ;;
+    random|--random|rand)
+        "$DAEMON" random
+        ;;
+    order|--order)
+        if [ "$1" = "seq" ] || [ "$1" = "sequential" ]; then
+            update_config_key "ROTATION_ORDER" "sequential"
+            echo "✓ Ordre de rotation défini sur : séquentiel"
+        else
+            update_config_key "ROTATION_ORDER" "random"
+            echo "✓ Ordre de rotation défini sur : aléatoire (random)"
+        fi
+        ;;
+    pick|select|fzf)
+        pick_global
+        ;;
+    *)
+        # Si c'est un nombre (ID Steam)
+        if [[ "$CMD" =~ ^[0-9]+$ ]]; then
+            fav_add "$CMD"
+            echo ""
+            echo "Astuces :"
+            echo "• Pour l'appliquer maintenant : set-wallpaper $CMD"
+            echo "• Pour l'ajouter à une playlist: wallpaper-add playlist add $CMD <nom>"
+        else
+            echo "Commande inconnue : $CMD"
+            echo ""
+            show_help
+            exit 1
+        fi
+        ;;
+esac
