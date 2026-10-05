@@ -27,7 +27,7 @@ yay -S hypr-wallpaper-manager-git
 Alternatively, you can build it manually:
 
 ```bash
-git clone https://github.com/VOTRE_PSEUDO/hypr-wallpaper-manager.git
+git clone https://github.com/FamilyTsuki/hypr-wallpaper-manager.git
 cd hypr-wallpaper-manager
 makepkg -si
 ```

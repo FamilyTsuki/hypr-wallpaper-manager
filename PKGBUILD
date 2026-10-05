@@ -1,10 +1,10 @@
-# Maintainer: VotrePseudo <votre.email@example.com>
+# Maintainer: FamilyTsuki
 pkgname=hypr-wallpaper-manager-git
 pkgver=r1.123456
 pkgrel=1
 pkgdesc="A wallpaper manager scripts suite for linux-wallpaperengine on Hyprland"
 arch=('any')
-url="https://github.com/VOTRE_PSEUDO/hypr-wallpaper-manager"
+url="https://github.com/FamilyTsuki/hypr-wallpaper-manager"
 license=('GPL3')
 depends=('bash' 'jq')
 optdepends=(
@@ -14,7 +14,7 @@ optdepends=(
 )
 provides=('hypr-wallpaper-manager')
 conflicts=('hypr-wallpaper-manager')
-source=("git+https://github.com/VOTRE_PSEUDO/hypr-wallpaper-manager.git")
+source=("git+https://github.com/FamilyTsuki/hypr-wallpaper-manager.git")
 sha256sums=('SKIP')
 
 pkgver() {
