@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# set-wallpaper : Application et configuration des fonds d'écran Wallpaper Engine
+# set-wallpaper : Apply and configure Wallpaper Engine wallpapers
 # ==============================================================================
 
 WORKSHOP_DIR="$HOME/.local/share/Steam/steamapps/workshop/content/431960"
@@ -13,7 +13,7 @@ FAV_FILE="$BASE_DIR/favorites.txt"
 PLAYLIST_DIR="$BASE_DIR/playlists"
 DAEMON="wallpaper-daemon"
 
-# Valeurs par défaut
+# Default values
 WALLPAPER_ID=""
 FPS="60"
 VOLUME="15"
@@ -28,7 +28,7 @@ ROTATION_NOTIFY="false"
 ACTIVE_PLAYLIST="default"
 QUIET="false"
 
-# Charger la configuration enregistrée si existante
+# Load saved configuration if exists
 if [ -f "$CONF_FILE" ]; then
     # shellcheck source=/dev/null
     source "$CONF_FILE"
@@ -36,37 +36,37 @@ fi
 PAUSE_MODE="${PAUSE_MODE:-only-active}"
 
 function show_help() {
-    echo "Usage: set-wallpaper [ID_STEAM] [OPTIONS]"
+    echo "Usage: set-wallpaper [STEAM_ID] [OPTIONS]"
     echo ""
-    echo "Gestion du fond d'écran :"
-    echo "  set-wallpaper <ID_STEAM>         Applique le fond d'écran et met à jour le démarrage"
-    echo "  set-wallpaper --list, -l         Liste tous vos fonds d'écran téléchargés"
-    echo "  set-wallpaper --status, --info   Affiche les paramètres et le fond d'écran actuels"
-    echo "  set-wallpaper --stop             Arrête le fond d'écran animé et la rotation"
-    echo "  set-wallpaper --restart          Relance le fond d'écran avec les paramètres enregistrés"
+    echo "Wallpaper Management:"
+    echo "  set-wallpaper <ID_STEAM>         Applies the wallpaper and updates startup config"
+    echo "  set-wallpaper --list, -l         Lists all downloaded wallpapers"
+    echo "  set-wallpaper --status, --info   Displays current settings and wallpaper"
+    echo "  set-wallpaper --stop             Stops the animated wallpaper and rotation"
+    echo "  set-wallpaper --restart          Restarts the wallpaper with saved settings"
     echo ""
-    echo "Modifier les paramètres d'affichage :"
-    echo "  --fps <valeur>                   Règle la fluidité en FPS (ex: 60, 30, 16)"
-    echo "  --volume <0-100>                 Règle le niveau de volume sonore"
-    echo "  --mute, --silent, -s             Coupe le son"
-    echo "  --unmute                         Rétablit le son"
-    echo "  --scaling <mode>                 Mode d'affichage (fill, fit, stretch)"
-    echo "  --pause-only-active              Pause uniquement si la fenêtre plein écran est active"
-    echo "  --no-pause, --no-fullscreen-pause Ne jamais mettre en pause le fond d'écran"
-    echo "  --pause-all                      Met en pause dès qu'une fenêtre plein écran existe"
+    echo "Modify display settings:"
+    echo "  --fps <valeur>                   Sets the framerate in FPS (e.g., 60, 30, 16)"
+    echo "  --volume <0-100>                 Sets the volume level"
+    echo "  --mute, --silent, -s             Mutes audio"
+    echo "  --unmute                         Unmutes audio"
+    echo "  --scaling <mode>                 Display mode (fill, fit, stretch)"
+    echo "  --pause-only-active              Pause only if the fullscreen window is focused"
+    echo "  --no-pause, --no-fullscreen-pause Never pause the wallpaper"
+    echo "  --pause-all                      Pause when any fullscreen window exists"
     echo ""
-    echo "Playlists, Favoris & Rotation (voir aussi 'wallpaper-add') :"
-    echo "  --fav [ID_STEAM]                 Ajoute aux favoris (défaut: fond actif)"
-    echo "  --unfav <ID_STEAM>               Retire des favoris"
-    echo "  --fav-list                       Liste tous les favoris"
-    echo "  --playlist <nom> [play]          Joue ou sélectionne une playlist"
-    echo "  --timer <durée>                  Règle l'intervalle et active la rotation (ex: 5m, 10m)"
-    echo "  --timer-stop                     Arrête la rotation automatique"
-    echo "  --next                           Passe au fond d'écran suivant"
-    echo "  --prev                           Revient au fond d'écran précédent"
-    echo "  --random                         Applique un fond d'écran aléatoire"
+    echo "Playlists, Favorites & Rotation (see also 'wallpaper-add'):"
+    echo "  --fav [ID_STEAM]                 Add to favorites (default: active wallpaper)"
+    echo "  --unfav <ID_STEAM>               Remove from favorites"
+    echo "  --fav-list                       List all favorites"
+    echo "  --playlist <nom> [play]          Play or select a playlist"
+    echo "  --timer <duration>                  Set interval and enable rotation (e.g., 5m, 10m)"
+    echo "  --timer-stop                     Stop automatic rotation"
+    echo "  --next                           Skip to next wallpaper"
+    echo "  --prev                           Go to previous wallpaper"
+    echo "  --random                         Apply a random wallpaper"
     echo ""
-    echo "Exemples :"
+    echo "Examples:"
     echo "  set-wallpaper 3599761711 --fps 60"
     echo "  set-wallpaper --fav"
     echo "  set-wallpaper --timer 10m"
@@ -76,67 +76,67 @@ function show_help() {
 
 function show_status() {
     echo "=================================================="
-    echo "       CONFIGURATION ACTUELLE DU FOND D'ÉCRAN     "
+    echo "       CURRENT WALLPAPER CONFIGURATION     "
     echo "=================================================="
     if [ -z "$WALLPAPER_ID" ]; then
-        echo "Aucun fond d'écran actif configuré."
+        echo "No active wallpaper configured."
         echo "=================================================="
         return
     fi
-    local title="Inconnu"
-    local type="Inconnu"
+    local title="Unknown"
+    local type="Unknown"
     local target_dir="$WORKSHOP_DIR/$WALLPAPER_ID"
     if [ -f "$target_dir/project.json" ]; then
-        title=$(jq -r '.title // "Sans titre"' "$target_dir/project.json" 2>/dev/null)
-        type=$(jq -r '.type // "inconnu"' "$target_dir/project.json" 2>/dev/null)
+        title=$(jq -r '.title // "Untitled"' "$target_dir/project.json" 2>/dev/null)
+        type=$(jq -r '.type // "unknown"' "$target_dir/project.json" 2>/dev/null)
     fi
-    echo "• ID Steam    : $WALLPAPER_ID"
-    echo "• Titre       : $title"
+    echo "• Steam ID    : $WALLPAPER_ID"
+    echo "• Title       : $title"
     echo "• Type        : $type"
-    echo "• Fluidité    : $FPS FPS"
+    echo "• Framerate    : $FPS FPS"
     if [ "$SILENT" == "true" ]; then
-        echo "• Audio       : Muet (désactivé)"
+        echo "• Audio       : Muted (disabled)"
     else
         echo "• Volume      : $VOLUME %"
     fi
-    echo "• Échelle     : $SCALING"
+    echo "• Scaling     : $SCALING"
     case "$PAUSE_MODE" in
-        "only-active") echo "• Plein écran : Pause seulement si la fenêtre est active (bureau actuel)" ;;
-        "none")        echo "• Plein écran : Jamais en pause" ;;
-        "all")         echo "• Plein écran : Pause globale sur tous les bureaux" ;;
-        *)             echo "• Plein écran : $PAUSE_MODE" ;;
+        "only-active") echo "• Fullscreen : Pause only if window is active" ;;
+        "none")        echo "• Fullscreen : Never pause" ;;
+        "all")         echo "• Fullscreen : Global pause across all workspaces" ;;
+        *)             echo "• Fullscreen : $PAUSE_MODE" ;;
     esac
 
     # Favori
     if [ -f "$FAV_FILE" ] && grep -qx "$WALLPAPER_ID" "$FAV_FILE" 2>/dev/null; then
-        echo "• Favori      : Oui ⭐"
+        echo "• Favorite    : Yes ⭐"
     else
-        echo "• Favori      : Non"
+        echo "• Favorite    : No"
     fi
 
     # Rotation
     if [ "$ROTATION_ENABLED" = "true" ]; then
-        echo "• Rotation    : Activée ($ROTATION_INTERVAL, Source: $ROTATION_SOURCE)"
+        echo "• Rotation    : Enabled ($ROTATION_INTERVAL, Source: $ROTATION_SOURCE)"
     else
-        echo "• Rotation    : Désactivée"
+        echo "• Rotation    : Disabled"
     fi
     echo "=================================================="
 }
 
 function list_wallpapers() {
-    echo "Fonds d'écran disponibles :"
+    echo "Available wallpapers:"
     echo "--------------------------------------------------------------------------------"
-    printf "%-12s | %-8s | %s\n" "ID" "TYPE" "TITRE"
+    printf "%-12s | %-8s | %s\n" "ID" "TYPE" "TITLE"
     echo "--------------------------------------------------------------------------------"
     for dir in "$WORKSHOP_DIR"/*; do
         if [ -d "$dir" ]; then
             local id
             id=$(basename "$dir")
-            local title="Inconnu"
-            local type="Inconnu"
+            local title="Unknown"
+            local type="Unknown"
             if [ -f "$dir/project.json" ]; then
-                title=$(jq -r '.title // "Sans titre"' "$dir/project.json" 2>/dev/null)
-                type=$(jq -r '.type // "inconnu"' "$dir/project.json" 2>/dev/null)
+                title=$(jq -r '.title // "Untitled"' "$dir/project.json" 2>/dev/null)
+                type=$(jq -r '.type // "unknown"' "$dir/project.json" 2>/dev/null)
             fi
             printf "%-12s | %-8s | %s\n" "$id" "$type" "$title"
         fi
@@ -172,7 +172,7 @@ while [ $# -gt 0 ]; do
             if [ -x "$DAEMON" ]; then
                 "$DAEMON" stop >/dev/null 2>&1
             fi
-            echo "Fond d'écran animé arrêté."
+            echo "Animated wallpaper stopped."
             exit 0
             ;;
         --status|--info)
@@ -189,7 +189,7 @@ while [ $# -gt 0 ]; do
                 CHANGED=1
                 shift 2
             else
-                echo "Erreur : La valeur FPS doit être un nombre entier (ex: --fps 60)."
+                echo "Error: FPS value must be an integer (e.g., --fps 60)."
                 exit 1
             fi
             ;;
@@ -200,7 +200,7 @@ while [ $# -gt 0 ]; do
                 CHANGED=1
                 shift 2
             else
-                echo "Erreur : Le volume doit être un nombre entre 0 et 100 (ex: --volume 25)."
+                echo "Error: Volume must be between 0 and 100 (e.g., --volume 25)."
                 exit 1
             fi
             ;;
@@ -220,7 +220,7 @@ while [ $# -gt 0 ]; do
                 CHANGED=1
                 shift 2
             else
-                echo "Erreur : Spécifiez un mode de scaling (fill, fit, stretch)."
+                echo "Error: Specify a scaling mode (fill, fit, stretch)."
                 exit 1
             fi
             ;;
@@ -297,7 +297,7 @@ while [ $# -gt 0 ]; do
                 CHANGED=1
                 shift
             else
-                echo "Option inconnue : $1"
+                echo "Unknown option: $1"
                 echo ""
                 show_help
                 exit 1
@@ -314,26 +314,26 @@ fi
 if [ -n "$NEW_ID" ]; then
     TARGET_DIR="$WORKSHOP_DIR/$NEW_ID"
     if [ ! -d "$TARGET_DIR" ]; then
-        echo "Erreur : Le fond d'écran avec l'ID $NEW_ID n'existe pas dans :"
+        echo "Error: Wallpaper with ID $NEW_ID does not exist in:"
         echo "  $TARGET_DIR"
-        echo "Vérifiez que vous êtes bien abonné sur Steam et que le téléchargement est terminé."
+        echo "Check your Steam subscriptions and ensure the download is complete."
         exit 1
     fi
     WALLPAPER_ID="$NEW_ID"
 fi
 
 if [ -z "$WALLPAPER_ID" ]; then
-    echo "Erreur : Aucun fond d'écran actif. Spécifiez un ID Steam : set-wallpaper <ID_STEAM>"
+    echo "Error: No active wallpaper. Specify a Steam ID: set-wallpaper <STEAM_ID>"
     exit 1
 fi
 
 TARGET_DIR="$WORKSHOP_DIR/$WALLPAPER_ID"
 if [ ! -d "$TARGET_DIR" ]; then
-    echo "Erreur : Le dossier du fond d'écran $WALLPAPER_ID est introuvable."
+    echo "Error: The folder for wallpaper $WALLPAPER_ID was not found."
     exit 1
 fi
 
-# Sauvegarder la configuration complète
+# Save full configuration
 cat << EOF > "$CONF_FILE"
 WORKSHOP_DIR="$WORKSHOP_DIR"
 ASSETS_DIR="$ASSETS_DIR"
@@ -363,7 +363,7 @@ elif [ "$PAUSE_MODE" == "all" ]; then
     PAUSE_OPT=""
 fi
 
-# Mettre à jour le script de lancement pour le démarrage Hyprland
+# Update the launch script for Hyprland startup
 cat << EOF > "$LAUNCH_SCRIPT"
 #!/bin/bash
 killall -q linux-wallpaperengine
@@ -404,29 +404,29 @@ EOF
 
 chmod +x "$LAUNCH_SCRIPT"
 
-# Relancer le fond d'écran
+# Restart the wallpaper
 "$LAUNCH_SCRIPT"
 
-TITLE="Inconnu"
-TYPE="Inconnu"
+TITLE="Unknown"
+TYPE="Unknown"
 if [ -f "$TARGET_DIR/project.json" ]; then
-    TITLE=$(jq -r '.title // "Sans titre"' "$TARGET_DIR/project.json" 2>/dev/null)
-    TYPE=$(jq -r '.type // "inconnu"' "$TARGET_DIR/project.json" 2>/dev/null)
+    TITLE=$(jq -r '.title // "Untitled"' "$TARGET_DIR/project.json" 2>/dev/null)
+    TYPE=$(jq -r '.type // "unknown"' "$TARGET_DIR/project.json" 2>/dev/null)
 fi
 
 if [ "$QUIET" != "true" ]; then
-    echo "Paramètres appliqués avec succès !"
-    echo "• Fond d'écran : $TITLE (ID: $WALLPAPER_ID, Type: $TYPE)"
-    echo "• Fluidité     : $FPS FPS"
+    echo "Settings applied successfully!"
+    echo "• Wallpaper : $TITLE (ID: $WALLPAPER_ID, Type: $TYPE)"
+    echo "• Framerate     : $FPS FPS"
     if [ "$SILENT" == "true" ]; then
-        echo "• Audio        : Muet"
+        echo "• Audio       : Muted"
     else
         echo "• Volume       : $VOLUME %"
     fi
-    echo "• Échelle      : $SCALING"
+    echo "• Scaling      : $SCALING"
     case "$PAUSE_MODE" in
-        "only-active") echo "• Plein écran  : Pause seulement si la fenêtre est active" ;;
-        "none")        echo "• Plein écran  : Jamais en pause" ;;
-        "all")         echo "• Plein écran  : Pause globale sur tous les bureaux" ;;
+        "only-active") echo "• Fullscreen  : Pause only if window is active" ;;
+        "none")        echo "• Fullscreen  : Never pause" ;;
+        "all")         echo "• Fullscreen  : Global pause across all workspaces" ;;
     esac
 fi

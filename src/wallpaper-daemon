@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# wallpaper-daemon : Démon de rotation automatique de fonds d'écran Wallpaper Engine
+# wallpaper-daemon : Automatic rotation daemon for Wallpaper Engine
 # ==============================================================================
 
 BASE_DIR="$HOME/.config/hypr/wallpaper_engine"
@@ -17,7 +17,7 @@ SET_WALLPAPER="set-wallpaper"
 mkdir -p "$BASE_DIR" "$PLAYLIST_DIR"
 touch "$FAV_FILE" "$HISTORY_FILE"
 
-# Charger la configuration
+# Load configuration
 if [ -f "$CONF_FILE" ]; then
     # shellcheck source=/dev/null
     source "$CONF_FILE"
@@ -35,7 +35,7 @@ parse_duration() {
     elif [[ "$str" =~ ^([0-9]+)d$ ]]; then
         echo "$((BASH_REMATCH[1] * 86400))"
     elif [[ "$str" =~ ^([0-9]+)$ ]]; then
-        # Par défaut, si juste un nombre, interprété en minutes
+        # By default, if just a number, interpreted in minutes
         echo "$((str * 60))"
     else
         echo "-1"
@@ -69,9 +69,9 @@ get_title() {
     local id="$1"
     local proj="$WORKSHOP_DIR/$id/project.json"
     if [ -f "$proj" ]; then
-        jq -r '.title // "Sans titre"' "$proj" 2>/dev/null || echo "Sans titre"
+        jq -r '.title // "Untitled"' "$proj" 2>/dev/null || echo "Untitled"
     else
-        echo "Inconnu"
+        echo "Unknown"
     fi
 }
 
@@ -79,9 +79,9 @@ get_type() {
     local id="$1"
     local proj="$WORKSHOP_DIR/$id/project.json"
     if [ -f "$proj" ]; then
-        jq -r '.type // "inconnu"' "$proj" 2>/dev/null || echo "inconnu"
+        jq -r '.type // "unknown"' "$proj" 2>/dev/null || echo "unknown"
     else
-        echo "inconnu"
+        echo "unknown"
     fi
 }
 
@@ -132,7 +132,7 @@ get_items_for_source() {
             done
             ;;
         *)
-            # Vérifier si c'est directement un nom de playlist
+            # Check if it's directly a playlist name
             local pfile="$PLAYLIST_DIR/${src}.txt"
             if [ -f "$pfile" ]; then
                 while IFS= read -r id || [ -n "$id" ]; do
@@ -161,7 +161,7 @@ send_notify() {
     title=$(get_title "$id")
     if command -v notify-send >/dev/null 2>&1; then
         notify-send -a "Wallpaper Engine" -i preferences-desktop-wallpaper \
-            "Fond d'écran changé" "$title (ID: $id)" 2>/dev/null || true
+            "Wallpaper changed" "$title (ID: $id)" 2>/dev/null || true
     fi
 }
 
@@ -186,7 +186,7 @@ get_pid() {
 
 start_daemon() {
     if is_running; then
-        echo "Le démon de rotation est déjà actif (PID: $(get_pid))."
+        echo "Rotation daemon is already active (PID: $(get_pid))."
         return 0
     fi
 
@@ -213,12 +213,12 @@ start_daemon() {
         sec=$(parse_duration "$interval")
         local fmt
         fmt=$(format_duration "$sec")
-        echo "✓ Démon de rotation démarré avec succès (PID: $pid) !"
-        echo "• Intervalle : $fmt"
+        echo "✓ Rotation daemon started successfully (PID: $pid) !"
+        echo "• Interval : $fmt"
         echo "• Source     : ${ROTATION_SOURCE:-favorites}"
-        echo "• Ordre      : ${ROTATION_ORDER:-random}"
+        echo "• Order      : ${ROTATION_ORDER:-random}"
     else
-        echo "Erreur lors du démarrage du démon."
+        echo "Error starting daemon."
         return 1
     fi
 }
@@ -234,26 +234,26 @@ stop_daemon() {
             kill -9 "$pid" 2>/dev/null
         fi
         rm -f "$PID_FILE"
-        echo "✓ Démon de rotation arrêté."
+        echo "✓ Rotation daemon stopped."
     else
         rm -f "$PID_FILE"
-        echo "Le démon de rotation n'était pas actif."
+        echo "Rotation daemon was not active."
     fi
 }
 
 status_daemon() {
     echo "=================================================="
-    echo "         STATUT DE LA ROTATION AUTOMATIQUE        "
+    echo "         AUTOMATIC ROTATION STATUS        "
     echo "=================================================="
     if is_running; then
         local pid
         pid=$(get_pid)
-        echo "• État        : ACTIF (PID: $pid)"
+        echo "• State       : ACTIVE (PID: $pid)"
     else
-        echo "• État        : INACTIF"
+        echo "• State       : INACTIVE"
     fi
 
-    # Recharger conf
+    # Reload config
     [ -f "$CONF_FILE" ] && source "$CONF_FILE"
 
     local interval="${ROTATION_INTERVAL:-10m}"
@@ -261,18 +261,18 @@ status_daemon() {
     sec=$(parse_duration "$interval")
     local fmt
     fmt=$(format_duration "$sec")
-    echo "• Intervalle  : $fmt ($sec secondes)"
+    echo "• Interval  : $fmt ($sec secondes)"
     echo "• Source      : ${ROTATION_SOURCE:-favorites}"
-    echo "• Ordre       : ${ROTATION_ORDER:-random}"
-    echo "• Notifs      : ${ROTATION_NOTIFY:-false}"
+    echo "• Order       : ${ROTATION_ORDER:-random}"
+    echo "• Notifications      : ${ROTATION_NOTIFY:-false}"
 
-    # Afficher le nombre d'éléments disponibles dans la source
+    # Display the number of available items in the source
     mapfile -t items < <(get_items_for_source "${ROTATION_SOURCE:-favorites}")
-    echo "• Éléments    : ${#items[@]} fond(s) dans la source active"
+    echo "• Items    : ${#items[@]} wallpaper(s) in active source"
     if [ -f "$LOG_FILE" ]; then
         local last_change
         last_change=$(tail -n 1 "$LOG_FILE" 2>/dev/null)
-        [ -n "$last_change" ] && echo "• Dernier log : $last_change"
+        [ -n "$last_change" ] && echo "• Last log : $last_change"
     fi
     echo "=================================================="
 }
@@ -285,7 +285,7 @@ next_wallpaper() {
     fi
 
     if [ ${#items[@]} -eq 0 ]; then
-        echo "Aucun fond d'écran disponible pour la rotation."
+        echo "No wallpaper available for rotation."
         return 1
     fi
 
@@ -331,7 +331,7 @@ prev_wallpaper() {
     fi
 
     if [ ${#items[@]} -eq 0 ]; then
-        echo "Aucun fond d'écran disponible."
+        echo "No wallpaper available."
         return 1
     fi
 
@@ -368,7 +368,7 @@ random_wallpaper() {
     fi
 
     if [ ${#items[@]} -eq 0 ]; then
-        echo "Aucun fond d'écran disponible."
+        echo "No wallpaper available."
         return 1
     fi
 
@@ -413,13 +413,13 @@ run_daemon_loop() {
     trap cleanup SIGTERM SIGINT SIGHUP
     trap handle_usr1 SIGUSR1
 
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Démon de rotation démarré (PID: $$)" >> "$LOG_FILE"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Rotation daemon started (PID: $$)" >> "$LOG_FILE"
 
     while [ "$term_received" -eq 0 ]; do
         [ -f "$CONF_FILE" ] && source "$CONF_FILE"
 
         if [ "${ROTATION_ENABLED:-false}" != "true" ]; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Rotation désactivée dans la configuration. Arrêt du démon." >> "$LOG_FILE"
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Rotation disabled in config. Stopping daemon." >> "$LOG_FILE"
             break
         fi
 
@@ -429,7 +429,7 @@ run_daemon_loop() {
         [ "$sec" -le 0 ] && sec=600
 
         usr1_received=0
-        # Attente jusqu'à l'intervalle ou réception d'un signal
+        # Wait for interval or signal
         sleep "$sec" &
         sleep_subpid=$!
         wait "$sleep_subpid" 2>/dev/null
@@ -437,13 +437,13 @@ run_daemon_loop() {
 
         [ "$term_received" -ne 0 ] && break
 
-        # Si réveillé par USR1 (changement manuel ou redémarrage du timer), on réinitialise le délai
+        # If woken up by USR1 (manual change or timer restart), reset delay
         if [ "$usr1_received" -eq 1 ]; then
             usr1_received=0
             continue
         fi
 
-        # Re-vérifier après réveil
+        # Re-check after waking up
         [ -f "$CONF_FILE" ] && source "$CONF_FILE"
         [ "${ROTATION_ENABLED:-false}" != "true" ] && break
 
@@ -478,7 +478,7 @@ run_daemon_loop() {
             fi
 
             if [ -n "$next_id" ] && [ "$next_id" != "$WALLPAPER_ID" ]; then
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] Rotation vers: $next_id ($(get_title "$next_id"))" >> "$LOG_FILE"
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] Rotation to: $next_id ($(get_title "$next_id"))" >> "$LOG_FILE"
                 "$SET_WALLPAPER" "$next_id" --quiet
                 record_history "$next_id"
                 if [ "${ROTATION_NOTIFY:-false}" = "true" ]; then
